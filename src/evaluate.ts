@@ -11,6 +11,7 @@
  * limitations under the License.
  */
 
+import {ContainerRule} from './parser.js';
 import {ComparisonOperator} from './utils/parse-media-feature.js';
 
 export const enum ExpressionType {
@@ -139,16 +140,15 @@ export interface TreeContext {
   writingAxis: WritingAxis;
 }
 
-export interface QueryContext {
-  sizeFeatures: SizeFeatures;
+interface QueryContext {
+  sizeFeatures: Map<SizeFeature, Value>;
   treeContext: TreeContext;
 }
 
-function evaluateFeatureValue(
+function precomputeFeatureValue(
   feature: SizeFeature,
-  context: QueryContext
+  sizeFeatures: SizeFeatures
 ): Value {
-  const sizeFeatures = context.sizeFeatures;
   const width = sizeFeatures.width;
   const height = sizeFeatures.height;
   const inlineSize = sizeFeatures.inlineSize;
@@ -204,11 +204,40 @@ function evaluateExpressionToValue(
     case ExpressionType.Comparison:
       return evaluateExpressionToBoolean(node, context);
 
-    case ExpressionType.Feature:
-      return evaluateFeatureValue(node.feature, context);
+    case ExpressionType.Feature: {
+      const value = context.sizeFeatures.get(node.feature);
+      return value == null ? {type: ValueType.Unknown} : value;
+    }
 
     case ExpressionType.Value:
       return node.value;
+  }
+}
+
+function toBooleanValue(value: boolean): Value {
+  return {type: ValueType.Boolean, value};
+}
+
+function compareNumericValueInternal(
+  lhs: number,
+  rhs: number,
+  operator: ComparisonOperator
+) {
+  switch (operator) {
+    case ComparisonOperator.EQUAL:
+      return lhs === rhs;
+
+    case ComparisonOperator.GREATER_THAN:
+      return lhs > rhs;
+
+    case ComparisonOperator.GREATER_THAN_EQUAL:
+      return lhs >= rhs;
+
+    case ComparisonOperator.LESS_THAN:
+      return lhs < rhs;
+
+    case ComparisonOperator.LESS_THAN_EQUAL:
+      return lhs <= rhs;
   }
 }
 
@@ -217,22 +246,7 @@ function compareNumericValue(
   rhs: number,
   operator: ComparisonOperator
 ): Value {
-  switch (operator) {
-    case ComparisonOperator.EQUAL:
-      return {type: ValueType.Boolean, value: lhs === rhs};
-
-    case ComparisonOperator.GREATER_THAN:
-      return {type: ValueType.Boolean, value: lhs > rhs};
-
-    case ComparisonOperator.GREATER_THAN_EQUAL:
-      return {type: ValueType.Boolean, value: lhs >= rhs};
-
-    case ComparisonOperator.LESS_THAN:
-      return {type: ValueType.Boolean, value: lhs < rhs};
-
-    case ComparisonOperator.LESS_THAN_EQUAL:
-      return {type: ValueType.Boolean, value: lhs <= rhs};
-  }
+  return toBooleanValue(compareNumericValueInternal(lhs, rhs, operator));
 }
 
 function transformNullableNumbers(
@@ -330,23 +344,13 @@ function coerceToPixelDimension(
   return null;
 }
 
-function compareOrientations(
-  lhs: OrientationValue,
-  rhs: OrientationValue,
+function compareValues<T, C extends {value: T}>(
+  lhs: C,
+  rhs: C,
   operator: ComparisonOperator
 ): Value {
   return operator === ComparisonOperator.EQUAL
-    ? {type: ValueType.Boolean, value: lhs.value === rhs.value}
-    : {type: ValueType.Unknown};
-}
-
-function compareBooleans(
-  lhs: BooleanValue,
-  rhs: BooleanValue,
-  operator: ComparisonOperator
-): Value {
-  return operator === ComparisonOperator.EQUAL
-    ? {type: ValueType.Boolean, value: lhs.value === rhs.value}
+    ? toBooleanValue(lhs.value === rhs.value)
     : {type: ValueType.Unknown};
 }
 
@@ -359,15 +363,11 @@ function evaluateComparisonExpression(
   const operator = node.operator;
 
   if (
-    left.type === ValueType.Orientation &&
-    right.type === ValueType.Orientation
+    (left.type === ValueType.Orientation &&
+      right.type === ValueType.Orientation) ||
+    (left.type === ValueType.Boolean && right.type === ValueType.Boolean)
   ) {
-    return compareOrientations(left, right, operator);
-  } else if (
-    left.type === ValueType.Boolean &&
-    right.type === ValueType.Boolean
-  ) {
-    return compareBooleans(left, right, operator);
+    return compareValues(left, right, operator);
   } else if (
     left.type === ValueType.Dimension ||
     right.type === ValueType.Dimension
@@ -393,14 +393,9 @@ function evaluateConjunctionExpression(
   context: QueryContext
 ): Value {
   const left = evaluateExpressionToBoolean(node.left, context);
-  const right = evaluateExpressionToBoolean(node.right, context);
-
-  return left.type === ValueType.Boolean && right.type === ValueType.Boolean
-    ? {
-        type: ValueType.Boolean,
-        value: left.value === true && right.value === true,
-      }
-    : {type: ValueType.Unknown};
+  return !(left.type === ValueType.Boolean && left.value === true)
+    ? left
+    : evaluateExpressionToBoolean(node.right, context);
 }
 
 function evaluateDisjunctionExpression(
@@ -408,17 +403,9 @@ function evaluateDisjunctionExpression(
   context: QueryContext
 ): Value {
   const left = evaluateExpressionToBoolean(node.left, context);
-  const right = evaluateExpressionToBoolean(node.right, context);
-
-  const leftVal = left.type === ValueType.Boolean ? left.value : null;
-  const rightVal = right.type === ValueType.Boolean ? right.value : null;
-
-  return leftVal !== null || rightVal !== null
-    ? {
-        type: ValueType.Boolean,
-        value: leftVal === true || rightVal === true,
-      }
-    : {type: ValueType.Unknown};
+  return left.type === ValueType.Boolean && left.value === true
+    ? left
+    : evaluateExpressionToBoolean(node.right, context);
 }
 
 function evaluateExpressionToBoolean(
@@ -446,7 +433,7 @@ function evaluateExpressionToBoolean(
       return evaluateValueToBoolean(evaluateExpressionToValue(node, context));
 
     case ExpressionType.Value:
-      return {type: ValueType.Unknown};
+      return evaluateValueToBoolean(node.value);
   }
 }
 
@@ -463,9 +450,26 @@ function evaluateValueToBoolean(value: Value): Value {
 }
 
 export function evaluateContainerCondition(
-  condition: ExpressionNode,
-  context: QueryContext
+  rule: ContainerRule,
+  context: {
+    sizeFeatures: SizeFeatures;
+    treeContext: TreeContext;
+  }
 ): boolean | null {
-  const result = evaluateExpressionToBoolean(condition, context);
+  const sizeFeatures = new Map<SizeFeature, Value>();
+  const sizeFeatureValues = context.sizeFeatures;
+
+  for (const feature of rule.features) {
+    const value = precomputeFeatureValue(feature, sizeFeatureValues);
+    if (value.type === ValueType.Unknown) {
+      return null;
+    }
+    sizeFeatures.set(feature, value);
+  }
+
+  const result = evaluateExpressionToBoolean(rule.condition, {
+    sizeFeatures,
+    treeContext: context.treeContext,
+  });
   return result.type === ValueType.Boolean ? result.value : null;
 }

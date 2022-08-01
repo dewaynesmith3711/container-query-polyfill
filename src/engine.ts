@@ -12,8 +12,8 @@
  */
 
 import {
-  evaluateContainerCondition,
   ContainerType,
+  evaluateContainerCondition,
   TreeContext,
   WritingAxis,
 } from './evaluate.js';
@@ -38,23 +38,25 @@ interface PhysicalSize {
   height: number;
 }
 
-interface QueryContainerState {
-  /**
-   * True if the query container's condition evaluates to true.
-   */
-  condition: boolean | null;
+const enum QueryContainerFlags {
+  None = 0,
 
   /**
-   * True if the query container's rules should be applied.
+   * Whether the container's condition evaluated to true.
+   */
+  Condition = 1 << 0,
+
+  /**
+   * Whether the container's rules should be applied.
    *
    * Note: this is subtly different from `condition`, as it
    * takes into account any parent containers and conditions too.
    */
-  container: boolean;
+  Container = 1 << 1,
 }
 
 interface LayoutState {
-  conditions: Map<string, QueryContainerState>;
+  conditions: Map<string, QueryContainerFlags>;
   context: TreeContext;
   isQueryContainer: boolean;
 }
@@ -63,6 +65,15 @@ type QueryDescriptorArray = Iterable<ContainerQueryDescriptor>;
 
 const INSTANCE_SYMBOL: unique symbol = Symbol('CQ_INSTANCE');
 const SUPPORTS_SMALL_VIEWPORT_UNITS = CSS.supports('width: 1svh');
+const VERTICAL_WRITING_MODES = new Set([
+  'vertical-lr',
+  'vertical-rl',
+  'sideways-rl',
+  'sideways-lr',
+  'tb',
+  'tb-lr',
+  'tb-rl',
+]);
 
 const WIDTH_BORDER_BOX_PROPERTIES: string[] = [
   'padding-left',
@@ -685,14 +696,16 @@ class LayoutStateManager {
     const attributes: string[] = [];
 
     for (const query of this.context.getQueryDescriptors()) {
-      const result = conditions.get(query.uid);
-      if (
-        query.selector != null &&
-        result != null &&
-        result.container &&
-        el.matches(query.selector)
-      ) {
-        attributes.push(query.uid);
+      if (query.selector != null) {
+        const result = conditions.get(query.uid);
+        if (
+          result != null &&
+          (result & QueryContainerFlags.Container) ===
+            QueryContainerFlags.Container &&
+          el.matches(query.selector)
+        ) {
+          attributes.push(query.uid);
+        }
       }
     }
 
@@ -707,7 +720,7 @@ class LayoutStateManager {
         styles.getPropertyValue('box-sizing') === 'border-box';
 
       const getDimension = (property: string) =>
-        computeDimension(styles.getPropertyValue(property));
+        parseFloat(styles.getPropertyValue(property));
       const sumProperties = (properties: string[]) =>
         properties.reduce(
           (current, property) => current + getDimension(property),
@@ -718,7 +731,7 @@ class LayoutStateManager {
         writingAxis: computeWritingAxis(
           styles.getPropertyValue('writing-mode')
         ),
-        fontSize: computeDimension(styles.getPropertyValue('font-size')),
+        fontSize: parseFloat(styles.getPropertyValue('font-size')),
         width:
           getDimension('width') -
           (isBorderBox ? sumProperties(WIDTH_BORDER_BOX_PROPERTIES) : 0),
@@ -738,7 +751,7 @@ class LayoutStateManager {
       const parentConditions = parentState.conditions;
       const styles = this.styles;
       const containerType = computeContainerType(
-        styles.getPropertyValue(CUSTOM_PROPERTY_TYPE)
+        styles.getPropertyValue(CUSTOM_PROPERTY_TYPE).trim()
       );
       const data = this.getLayoutData();
 
@@ -758,7 +771,7 @@ class LayoutStateManager {
         (containerType & ContainerType.BlockSize) === ContainerType.BlockSize
       ) {
         const isValidContainer = computeValidContainer(
-          styles.getPropertyValue('display')
+          styles.getPropertyValue('display').trim()
         );
 
         const sizeFeatures = computeSizeFeatures(containerType, data);
@@ -773,39 +786,48 @@ class LayoutStateManager {
           styles.getPropertyValue(CUSTOM_PROPERTY_NAME)
         );
 
+        const computeQueryCondition = (query: ContainerQueryDescriptor) => {
+          const result = hasAllQueryNames(containerNames, query)
+            ? isValidContainer
+              ? evaluateContainerCondition(query.rule, queryContext)
+              : false
+            : null;
+
+          if (result == null) {
+            const condition = parentConditions.get(query.uid) ?? 0;
+            return (
+              (condition && QueryContainerFlags.Condition) ===
+              QueryContainerFlags.Condition
+            );
+          }
+
+          return result === true;
+        };
+
         const computeQueryState = (
-          conditions: Map<string, QueryContainerState>,
+          conditions: Map<string, QueryContainerFlags>,
           query: ContainerQueryDescriptor
-        ): QueryContainerState => {
+        ): QueryContainerFlags => {
           let state = conditions.get(query.uid);
-          if (!state) {
-            let res = hasAllQueryNames(containerNames, query)
-              ? isValidContainer
-                ? evaluateContainerCondition(query.condition, queryContext)
-                : false
-              : null;
+          if (state == null) {
+            const condition = computeQueryCondition(query);
+            const container =
+              condition === true &&
+              (query.parent == null ||
+                (computeQueryState(conditions, query.parent) &
+                  QueryContainerFlags.Condition) ===
+                  QueryContainerFlags.Condition);
 
-            if (res == null) {
-              const parentResult = parentConditions.get(query.uid);
-              res = parentResult ? parentResult.condition : null;
-            }
-
-            state = {
-              condition: res,
-              container:
-                res === true &&
-                (query.parent
-                  ? computeQueryState(conditions, query.parent).condition ===
-                    true
-                  : true),
-            };
+            state =
+              (condition ? QueryContainerFlags.Condition : 0) |
+              (container ? QueryContainerFlags.Container : 0);
             conditions.set(query.uid, state);
           }
 
           return state;
         };
 
-        const conditions: Map<string, QueryContainerState> = new Map();
+        const conditions: Map<string, QueryContainerFlags> = new Map();
         for (const query of this.context.getQueryDescriptors()) {
           computeQueryState(conditions, query);
         }
@@ -870,16 +892,12 @@ function computeSizeFeatures(type: ContainerType, data: ParsedLayoutData) {
 }
 
 function hasAllQueryNames(names: Set<string>, query: ContainerQueryDescriptor) {
-  for (const name of query.names) {
+  for (const name of query.rule.names) {
     if (!names.has(name)) {
       return false;
     }
   }
   return true;
-}
-
-function computeDimension(dimension: string) {
-  return parseFloat(dimension);
 }
 
 function computeContainerType(containerType: string): ContainerType {
@@ -943,19 +961,9 @@ function computeContainerNames(containerNames: string) {
 }
 
 function computeWritingAxis(writingMode: string) {
-  switch (writingMode) {
-    case 'vertical-lr':
-    case 'vertical-rl':
-    case 'sideways-rl':
-    case 'sideways-lr':
-    case 'tb':
-    case 'tb-lr':
-    case 'tb-rl':
-      return WritingAxis.Vertical;
-
-    default:
-      return WritingAxis.Horizontal;
-  }
+  return VERTICAL_WRITING_MODES.has(writingMode)
+    ? WritingAxis.Vertical
+    : WritingAxis.Horizontal;
 }
 
 if (!('container' in document.documentElement.style)) {

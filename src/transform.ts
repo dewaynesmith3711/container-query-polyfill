@@ -22,12 +22,12 @@ import {
   DATA_ATTRIBUTE_CHILD,
   DATA_ATTRIBUTE_SELF,
 } from './constants.js';
-import {ExpressionNode} from './evaluate.js';
 import {
   parseContainerShorthand,
   consumeContainerNameProperty,
   consumeContainerTypeProperty,
   parseContainerRule,
+  ContainerRule,
 } from './parser.js';
 import {customVar, func, delim, decl, ident} from './utils/ast.js';
 import {
@@ -57,8 +57,7 @@ import {
 } from './utils/parse-media-query.js';
 
 export interface ContainerQueryDescriptor {
-  names: Set<string>;
-  condition: ExpressionNode;
+  rule: ContainerRule;
   uid: string;
   selector: string | null;
   parent: ContainerQueryDescriptor | null;
@@ -573,11 +572,10 @@ function transformContainerAtRule(
   context: TransformContext
 ): AtRuleNode {
   if (node.value) {
-    const containerRule = parseContainerRule(node.prelude);
-    if (containerRule !== PARSE_ERROR) {
+    const rule = parseContainerRule(node.prelude);
+    if (rule !== PARSE_ERROR) {
       const descriptor: ContainerQueryDescriptor = {
-        names: new Set(containerRule.names),
-        condition: containerRule.condition,
+        rule,
         selector: null,
         parent: context.parent,
         uid: `c${CONTAINER_ID++}`,

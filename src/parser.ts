@@ -37,8 +37,13 @@ import {
 } from './utils/parse-media-query.js';
 
 export interface ContainerRule {
-  names: ContainerNamesResult;
+  names: Set<string>;
   condition: ExpressionNode;
+  features: Set<SizeFeature>;
+}
+
+export interface ContainerRuleContext {
+  features: Set<SizeFeature>;
 }
 
 type ContainerNamesResult = string[];
@@ -163,23 +168,25 @@ function consumeValue(nodes: ReadonlyArray<Node>): ParseResult<ExpressionNode> {
   return isEOF(parser) ? {type: ExpressionType.Value, value} : PARSE_ERROR;
 }
 
-function parseSizeFeature(parser: Parser<Node>): ParseResult<ExpressionNode> {
+function parseSizeFeature(
+  parser: Parser<Node>,
+  context: ContainerRuleContext
+): ParseResult<ExpressionNode> {
   const mediaFeature = consumeMediaFeature(parser, FEATURE_NAMES);
   if (mediaFeature === PARSE_ERROR) {
     return PARSE_ERROR;
   }
 
-  if (mediaFeature.type === FeatureType.Boolean) {
-    const feature = SIZE_FEATURE_MAP[mediaFeature.feature];
-    return feature != null
-      ? {type: ExpressionType.Feature, feature}
-      : PARSE_ERROR;
-  } else {
-    const feature = SIZE_FEATURE_MAP[mediaFeature.feature];
-    if (feature == null) {
-      return PARSE_ERROR;
-    }
+  const feature = SIZE_FEATURE_MAP[mediaFeature.feature];
+  if (feature == null) {
+    return PARSE_ERROR;
+  }
+  // TODO: This is super wasteful, consider just using bits.
+  context.features.add(feature);
 
+  if (mediaFeature.type === FeatureType.Boolean) {
+    return {type: ExpressionType.Feature, feature};
+  } else {
     const featureValue = {type: ExpressionType.Feature, feature};
     let left: ParseResult<ExpressionNode> = PARSE_ERROR;
 
@@ -388,16 +395,22 @@ export function parseContainerRule(
     return PARSE_ERROR;
   }
 
-  const condition = transformExpression(rawCondition);
-  return isEOF(parser) ? {names, condition} : PARSE_ERROR;
+  const context = {features: new Set<SizeFeature>()};
+  const condition = transformExpression(rawCondition, context);
+  return isEOF(parser)
+    ? {names: new Set(names), condition, features: context.features}
+    : PARSE_ERROR;
 }
 
-function transformExpression(node: GenericExpressionNode): ExpressionNode {
+function transformExpression(
+  node: GenericExpressionNode,
+  context: ContainerRuleContext
+): ExpressionNode {
   switch (node.type) {
     case GenericExpressionType.Negate:
       return {
         type: ExpressionType.Negate,
-        value: transformExpression(node.value),
+        value: transformExpression(node.value, context),
       };
 
     case GenericExpressionType.Conjunction:
@@ -407,14 +420,15 @@ function transformExpression(node: GenericExpressionNode): ExpressionNode {
           node.type === GenericExpressionType.Conjunction
             ? ExpressionType.Conjunction
             : ExpressionType.Disjunction,
-        left: transformExpression(node.left),
-        right: transformExpression(node.right),
+        left: transformExpression(node.left, context),
+        right: transformExpression(node.right, context),
       };
 
     case GenericExpressionType.Literal: {
       if (node.value.type === Type.BlockNode) {
         const expression = parseSizeFeature(
-          createNodeParser(node.value.value.value)
+          createNodeParser(node.value.value.value),
+          context
         );
         if (expression !== PARSE_ERROR) {
           return expression;
