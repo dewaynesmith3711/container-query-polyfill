@@ -87,32 +87,32 @@ The polyfill uses the CSS [`:where()`](https://developer.mozilla.org/en-US/docs/
 
 </td>
 <td>
-    
+
 ```css
 @container (min-width: 200px) {
   #foo:not(.container-query-polyfill) {
     /* ... */
   }
 
-.bar:not(.container-query-polyfill) {
-/_ ... _/
-}
+  .bar:not(.container-query-polyfill) {
+    /* ... */
+  }
 
-#foo:not(.container-query-polyfill),
-.bar:not(.container-query-polyfill) {
-/_ ... _/
-}
+  #foo:not(.container-query-polyfill),
+  .bar:not(.container-query-polyfill) {
+    /* ... */
+  }
 
-ul > li:not(.container-query-polyfill) {
-/_ ... _/
-}
+  ul > li:not(.container-query-polyfill) {
+    /* ... */
+  }
 
-:not(.container-query-polyfill)::before {
-/_ ... _/
+  :not(.container-query-polyfill)::before {
+    /* ... */
+  }
 }
-}
-
 ```
+
 </td>
 </tr>
 </table>
@@ -122,4 +122,3 @@ This is to ensure the specificity of your rules never changes (e.g. while the po
 ## ResizeObserver Loop Errors
 
 When using the polyfill, you may observe reports of errors like `ResizeObserver loop completed with undelivered notifications` or `ResizeObserver loop limit exceeded`. These are expected, and may safely be ignored.
-```

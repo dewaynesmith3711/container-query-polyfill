@@ -12,8 +12,8 @@
  */
 
 import {
-  ContainerType,
   evaluateContainerCondition,
+  ContainerType,
   TreeContext,
   WritingAxis,
 } from './evaluate.js';
