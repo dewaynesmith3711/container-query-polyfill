@@ -13,7 +13,7 @@ To use the polyfill, add this script tag to the head of your document: :
 ```js
 <script type="module">
   if (!("container" in document.documentElement.style)) {
-    import("https://unpkg.com/container-query-polyfill/cqfill.modern.js");
+    import("https://unpkg.com/container-query-polyfill@canary");
   }
 </script>
 ```

@@ -31,7 +31,6 @@ import {
 } from './constants.js';
 import {ContainerQueryDescriptor, transpileStyleSheet} from './transform.js';
 import {isContainerStandaloneKeyword} from './parser.js';
-import {initializeForWPT} from './wpt.js';
 
 interface PhysicalSize {
   width: number;
@@ -124,7 +123,7 @@ interface LayoutStateContext {
   getQueryDescriptors(): Iterable<ContainerQueryDescriptor>;
 }
 
-function initializePolyfill() {
+export function initializePolyfill() {
   interface Instance {
     depth: number;
     state: LayoutStateManager;
@@ -964,12 +963,4 @@ function computeWritingAxis(writingMode: string) {
   return VERTICAL_WRITING_MODES.has(writingMode)
     ? WritingAxis.Vertical
     : WritingAxis.Horizontal;
-}
-
-if (!('container' in document.documentElement.style)) {
-  initializePolyfill();
-
-  if (IS_WPT_BUILD) {
-    initializeForWPT();
-  }
 }

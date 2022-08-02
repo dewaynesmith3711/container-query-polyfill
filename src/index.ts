@@ -11,5 +11,18 @@
  * limitations under the License.
  */
 
-declare const IS_WPT_BUILD: boolean;
-declare const PACKAGE_VERSION: string;
+import {initializePolyfill} from './engine';
+import {initializeForWPT} from './wpt';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(window as any).CQPolyfill = {
+  version: PACKAGE_VERSION,
+};
+
+if (!('container' in document.documentElement.style)) {
+  initializePolyfill();
+
+  if (IS_WPT_BUILD) {
+    initializeForWPT();
+  }
+}
