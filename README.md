@@ -51,7 +51,7 @@ You can view a more complete demo [here](https://codesandbox.io/s/smoosh-glitter
 
 ## Supporting browsers without `:where()`
 
-The polyfill uses the CSS [`:where()`](https://developer.mozilla.org/en-US/docs/Web/CSS/:where) pseudo-class to avoid changing the specificity of your rules. This pseudo-class is relatively new, however. To support older browsers, you will need to append the dummy `:not(container-query-polyfill)` pseudo-class to the originating element of every selector under a `@container` block:
+The polyfill uses the CSS [`:where()`](https://developer.mozilla.org/en-US/docs/Web/CSS/:where) pseudo-class to avoid changing the specificity of your rules. This pseudo-class is relatively new, however. If you need to support browsers without it, you will need to append the dummy `:not(container-query-polyfill)` pseudo-class to the originating element of every selector under a `@container` block:
 
 <table>
 <tr>

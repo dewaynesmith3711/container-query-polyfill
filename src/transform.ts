@@ -636,7 +636,6 @@ function transformContainerAtRule(
             `To use the Container Query Polyfill, you must modify the ` +
             `selectors under your @container rules:\n\n${lines.join('\n')}`
         );
-        return node;
       }
 
       if (elementSelectors.size > 0) {
