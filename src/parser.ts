@@ -37,7 +37,7 @@ import {
 } from './utils/parse-media-query.js';
 
 export interface ContainerRule {
-  names: Set<string>;
+  name: string | null;
   condition: ExpressionNode;
   features: Set<SizeFeature>;
 }
@@ -398,7 +398,11 @@ export function parseContainerRule(
   const context = {features: new Set<SizeFeature>()};
   const condition = transformExpression(rawCondition, context);
   return isEOF(parser)
-    ? {names: new Set(names), condition, features: context.features}
+    ? {
+        name: names.length > 0 ? names[0] : null,
+        condition,
+        features: context.features,
+      }
     : PARSE_ERROR;
 }
 

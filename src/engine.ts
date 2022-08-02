@@ -786,11 +786,14 @@ class LayoutStateManager {
         );
 
         const computeQueryCondition = (query: ContainerQueryDescriptor) => {
-          const result = hasAllQueryNames(containerNames, query)
-            ? isValidContainer
-              ? evaluateContainerCondition(query.rule, queryContext)
-              : false
-            : null;
+          const {rule} = query;
+          const name = rule.name;
+          const result =
+            name == null || containerNames.has(name)
+              ? isValidContainer
+                ? evaluateContainerCondition(rule, queryContext)
+                : false
+              : null;
 
           if (result == null) {
             const condition = parentConditions.get(query.uid) ?? 0;
@@ -888,15 +891,6 @@ function computeSizeFeatures(type: ContainerType, data: ParsedLayoutData) {
     inlineSize: inlineAxis.value,
     blockSize: blockAxis.value,
   };
-}
-
-function hasAllQueryNames(names: Set<string>, query: ContainerQueryDescriptor) {
-  for (const name of query.rule.names) {
-    if (!names.has(name)) {
-      return false;
-    }
-  }
-  return true;
 }
 
 function computeContainerType(containerType: string): ContainerType {
