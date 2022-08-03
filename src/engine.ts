@@ -220,33 +220,35 @@ export function initializePolyfill() {
 
   const rootController = new NodeController(documentElement);
   const queryDescriptorMap: Map<Node, QueryDescriptorArray> = new Map();
-  async function registerStyleSheet({
-    node,
-    source,
-    url,
-    signal,
-  }: {
-    node: Node;
-    source: string;
-    url?: URL;
-    signal?: AbortSignal;
-  }) {
+  async function registerStyleSheet(
+    node: Node,
+    {
+      source,
+      url,
+      signal,
+    }: {
+      source: string;
+      url?: URL;
+      signal?: AbortSignal;
+    }
+  ) {
     const result = transpileStyleSheet(
       source,
       url ? url.toString() : undefined
     );
+    let dispose = () => {
+      /* noop */
+    };
 
     if (!signal?.aborted) {
       queryDescriptorMap.set(node, result.descriptors);
+      dispose = () => queryDescriptorMap.delete(node);
       cachedQueryDescriptors = null;
-      forceUpdate(documentElement);
     }
 
     return {
       source: result.source,
-      dispose() {
-        queryDescriptorMap.delete(node);
-      },
+      dispose,
       refresh() {
         forceUpdate(documentElement);
       },
@@ -288,7 +290,7 @@ export function initializePolyfill() {
       const attributes = state.computeAttributesForElement(node);
       queueMutation(() => {
         if (attributes.length > 0) {
-          node.setAttribute(attribute, attributes.join(' '));
+          node.setAttribute(attribute, attributes);
         } else {
           node.removeAttribute(attribute);
         }
@@ -353,17 +355,15 @@ export function initializePolyfill() {
         } else if (node instanceof HTMLLinkElement) {
           innerController = new LinkElementController(node, {
             registerStyleSheet: options =>
-              registerStyleSheet({
+              registerStyleSheet(node, {
                 ...options,
-                node,
               }),
           });
         } else if (node instanceof HTMLStyleElement) {
           innerController = new StyleElementController(node, {
             registerStyleSheet: options =>
-              registerStyleSheet({
+              registerStyleSheet(node, {
                 ...options,
-                node,
               }),
           });
         } else {
@@ -554,46 +554,38 @@ class LinkElementController extends NodeController<HTMLLinkElement> {
     if (node.rel === 'stylesheet') {
       const url = new URL(node.href, document.baseURI);
       if (url.origin === location.origin) {
-        const controller = (this.controller = new AbortController());
-        const signal = controller.signal;
+        this.controller = tryAbortableFunction(async signal => {
+          const response = await fetch(url.toString(), {signal});
+          const source = await response.text();
 
-        const load = async () => {
-          try {
-            const response = await fetch(url.toString(), {signal});
-            const source = await response.text();
+          const styleSheet = (this.styleSheet =
+            await this.context.registerStyleSheet({source, url, signal}));
+          const blob = new Blob([styleSheet.source], {
+            type: 'text/css',
+          });
 
-            const styleSheet = (this.styleSheet =
-              await this.context.registerStyleSheet({source, url, signal}));
-            const blob = new Blob([styleSheet.source], {
-              type: 'text/css',
-            });
-
-            const img = new Image();
-            img.onload = img.onerror = () => {
-              styleSheet.refresh();
-            };
-            img.src = node.href = URL.createObjectURL(blob);
-          } catch (err) {
-            if (!isAbortError(err)) {
-              throw err;
-            }
-          }
-        };
-
-        load();
+          /**
+           * Even though it's a data URL, it may take several frames
+           * before the stylesheet is loaded. Additionally, the `onload`
+           * event isn't triggered on elements that have already loaded.
+           *
+           * Therefore, we use a dummy image to detect the right time
+           * to refresh.
+           */
+          const img = new Image();
+          img.onload = img.onerror = styleSheet.refresh;
+          img.src = node.href = URL.createObjectURL(blob);
+        });
       }
     }
   }
 
   disconnected(): void {
-    if (this.controller) {
-      this.controller.abort();
-      this.controller = null;
-    }
-    if (this.styleSheet) {
-      this.styleSheet.dispose();
-      this.styleSheet = null;
-    }
+    this.controller?.abort();
+    this.controller = null;
+
+    this.styleSheet?.dispose();
+    this.styleSheet = null;
   }
 }
 
@@ -610,34 +602,24 @@ class StyleElementController extends NodeController<HTMLStyleElement> {
   }
 
   connected(): void {
-    const node = this.node;
-    const controller = (this.controller = new AbortController());
-
-    const load = async () => {
-      try {
-        this.styleSheet = await this.context.registerStyleSheet({
+    this.controller = tryAbortableFunction(async signal => {
+      const node = this.node;
+      const styleSheet = (this.styleSheet =
+        await this.context.registerStyleSheet({
           source: node.innerHTML,
-          signal: controller.signal,
-        });
-        node.innerHTML = this.styleSheet.source;
-      } catch (err) {
-        if (!isAbortError(err)) {
-          throw err;
-        }
-      }
-    };
-    load();
+          signal,
+        }));
+      node.innerHTML = styleSheet.source;
+      styleSheet.refresh();
+    });
   }
 
   disconnected(): void {
-    if (this.controller) {
-      this.controller.abort();
-      this.controller = null;
-    }
-    if (this.styleSheet) {
-      this.styleSheet.dispose();
-      this.styleSheet = null;
-    }
+    this.controller?.abort();
+    this.controller = null;
+
+    this.styleSheet?.dispose();
+    this.styleSheet = null;
   }
 }
 
@@ -690,9 +672,9 @@ class LayoutStateManager {
     this.cachedLayoutData = null;
   }
 
-  computeAttributesForElement(el: Element): string[] {
+  computeAttributesForElement(el: Element): string {
     const conditions = this.get().conditions;
-    const attributes: string[] = [];
+    let attributes = '';
 
     for (const query of this.context.getQueryDescriptors()) {
       if (query.selector != null) {
@@ -703,7 +685,7 @@ class LayoutStateManager {
             QueryContainerFlags.Container &&
           el.matches(query.selector)
         ) {
-          attributes.push(query.uid);
+          attributes += query.uid + ' ';
         }
       }
     }
@@ -745,7 +727,8 @@ class LayoutStateManager {
   get(): LayoutState {
     let state = this.cachedState;
     if (!state) {
-      const parentState = this.context.getParentState();
+      const context = this.context;
+      const parentState = context.getParentState();
       const parentContext = parentState.context;
       const parentConditions = parentState.conditions;
       const styles = this.styles;
@@ -830,7 +813,7 @@ class LayoutStateManager {
         };
 
         const conditions: Map<string, QueryContainerFlags> = new Map();
-        for (const query of this.context.getQueryDescriptors()) {
+        for (const query of context.getQueryDescriptors()) {
           computeQueryState(conditions, query);
         }
 
@@ -859,8 +842,15 @@ class LayoutStateManager {
   }
 }
 
-function isAbortError(err: unknown) {
-  return err instanceof DOMException && err.message === 'AbortError';
+function tryAbortableFunction(fn: (signal: AbortSignal) => Promise<void>) {
+  const controller = new AbortController();
+  fn(controller.signal).catch(err => {
+    if (!(err instanceof DOMException && err.message === 'AbortError')) {
+      throw err;
+    }
+  });
+
+  return controller;
 }
 
 function computeSizeFeatures(type: ContainerType, data: ParsedLayoutData) {
