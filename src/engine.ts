@@ -54,9 +54,19 @@ const enum QueryContainerFlags {
   Container = 1 << 1,
 }
 
+const enum DisplayFlags {
+  // On if the `display` property is anything but `none`
+  Enabled = 1 << 0,
+
+  // On if the `display` property is valid for size containment.
+  // https://drafts.csswg.org/css-contain-2/#containment-size
+  EligibleForSizeContainment = 1 << 1,
+}
+
 interface LayoutState {
   conditions: Map<string, QueryContainerFlags>;
   context: TreeContext;
+  displayFlags: DisplayFlags;
   isQueryContainer: boolean;
 }
 
@@ -88,6 +98,19 @@ const HEIGHT_BORDER_BOX_PROPERTIES: string[] = [
   'border-bottom-width',
 ];
 
+/**
+ * For matching:
+ *
+ * display: [ table | ruby ]
+ * display: [ block | inline | ... ] [ table | ruby ]
+ * display: table-[ row | cell | ... ]
+ * display: ruby-[ base | text | ... ]
+ * display: inline-table
+ *
+ * https://drafts.csswg.org/css-display-3/#the-display-properties
+ */
+const TABLE_OR_RUBY_DISPLAY_TYPE = /(\w*(\s|-))?(table|ruby)(-\w*)?/;
+
 if (IS_WPT_BUILD) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (window as any).CQ_SYMBOL = INSTANCE_SYMBOL;
@@ -116,6 +139,7 @@ interface ParsedLayoutData {
   height: number;
   writingAxis: WritingAxis;
   fontSize: number;
+  displayFlags: DisplayFlags;
 }
 
 interface LayoutStateContext {
@@ -319,6 +343,7 @@ export function initializePolyfill() {
                 rootFontSize: context.fontSize,
                 writingAxis: context.writingAxis,
               },
+              displayFlags: context.displayFlags,
               isQueryContainer: false,
             };
           },
@@ -719,6 +744,9 @@ class LayoutStateManager {
         height:
           getDimension('height') -
           (isBorderBox ? sumProperties(HEIGHT_BORDER_BOX_PROPERTIES) : 0),
+        displayFlags: computeDisplayFlags(
+          styles.getPropertyValue('display').trim()
+        ),
       };
     }
     return data;
@@ -727,116 +755,109 @@ class LayoutStateManager {
   get(): LayoutState {
     let state = this.cachedState;
     if (!state) {
-      const context = this.context;
-      const parentState = context.getParentState();
-      const parentContext = parentState.context;
-      const parentConditions = parentState.conditions;
-      const styles = this.styles;
+      const {context: layoutContext, styles} = this;
+      const data = this.getLayoutData();
+      const parentState = layoutContext.getParentState();
+      const {context: parentContext, conditions: parentConditions} =
+        parentState;
+
+      let displayFlags = data.displayFlags;
+      if ((parentState.displayFlags & DisplayFlags.Enabled) === 0) {
+        displayFlags = 0;
+      }
+
+      let conditions = parentConditions;
+      let isQueryContainer = false;
+
+      const context: TreeContext = {
+        ...parentContext,
+        fontSize: data.fontSize,
+        writingAxis: data.writingAxis,
+      };
       const containerType = computeContainerType(
         styles.getPropertyValue(CUSTOM_PROPERTY_TYPE).trim()
       );
-      const data = this.getLayoutData();
 
-      state = {
-        conditions: parentState.conditions,
-        context: {
-          ...parentContext,
-          fontSize: data.fontSize,
-          writingAxis: data.writingAxis,
-        },
-        isQueryContainer: false,
-      };
+      if (containerType > 0) {
+        conditions = new Map();
+        isQueryContainer = true;
 
-      if (
-        (containerType & ContainerType.InlineSize) ===
-          ContainerType.InlineSize ||
-        (containerType & ContainerType.BlockSize) === ContainerType.BlockSize
-      ) {
-        const isValidContainer = computeValidContainer(
-          styles.getPropertyValue('display').trim()
-        );
+        const isValidContainer =
+          (displayFlags & DisplayFlags.EligibleForSizeContainment) ===
+          DisplayFlags.EligibleForSizeContainment;
 
-        const sizeFeatures = computeSizeFeatures(containerType, data);
-        const queryContext = {
-          sizeFeatures,
-          treeContext: {
-            ...parentContext,
-            writingAxis: data.writingAxis,
-          },
-        };
-        const containerNames = computeContainerNames(
-          styles.getPropertyValue(CUSTOM_PROPERTY_NAME)
-        );
+        if (isValidContainer) {
+          const sizeFeatures = computeSizeFeatures(containerType, data);
+          const queryContext = {
+            sizeFeatures,
+            treeContext: context,
+          };
+          const containerNames = computeContainerNames(
+            styles.getPropertyValue(CUSTOM_PROPERTY_NAME)
+          );
 
-        const computeQueryCondition = (query: ContainerQueryDescriptor) => {
-          const {rule} = query;
-          const name = rule.name;
-          const result =
-            name == null || containerNames.has(name)
-              ? isValidContainer
+          const computeQueryCondition = (query: ContainerQueryDescriptor) => {
+            const {rule} = query;
+            const name = rule.name;
+            const result =
+              name == null || containerNames.has(name)
                 ? evaluateContainerCondition(rule, queryContext)
-                : false
-              : null;
+                : null;
 
-          if (result == null) {
-            const condition = parentConditions.get(query.uid) ?? 0;
-            return (
-              (condition && QueryContainerFlags.Condition) ===
-              QueryContainerFlags.Condition
-            );
+            if (result == null) {
+              const condition = parentConditions.get(query.uid) ?? 0;
+              return (
+                (condition && QueryContainerFlags.Condition) ===
+                QueryContainerFlags.Condition
+              );
+            }
+
+            return result === true;
+          };
+
+          const computeQueryState = (
+            conditions: Map<string, QueryContainerFlags>,
+            query: ContainerQueryDescriptor
+          ): QueryContainerFlags => {
+            let state = conditions.get(query.uid);
+            if (state == null) {
+              const condition = computeQueryCondition(query);
+              const container =
+                condition === true &&
+                (query.parent == null ||
+                  (computeQueryState(conditions, query.parent) &
+                    QueryContainerFlags.Condition) ===
+                    QueryContainerFlags.Condition);
+
+              state =
+                (condition ? QueryContainerFlags.Condition : 0) |
+                (container ? QueryContainerFlags.Container : 0);
+              conditions.set(query.uid, state);
+            }
+
+            return state;
+          };
+
+          for (const query of layoutContext.getQueryDescriptors()) {
+            computeQueryState(conditions, query);
           }
 
-          return result === true;
-        };
-
-        const computeQueryState = (
-          conditions: Map<string, QueryContainerFlags>,
-          query: ContainerQueryDescriptor
-        ): QueryContainerFlags => {
-          let state = conditions.get(query.uid);
-          if (state == null) {
-            const condition = computeQueryCondition(query);
-            const container =
-              condition === true &&
-              (query.parent == null ||
-                (computeQueryState(conditions, query.parent) &
-                  QueryContainerFlags.Condition) ===
-                  QueryContainerFlags.Condition);
-
-            state =
-              (condition ? QueryContainerFlags.Condition : 0) |
-              (container ? QueryContainerFlags.Container : 0);
-            conditions.set(query.uid, state);
-          }
-
-          return state;
-        };
-
-        const conditions: Map<string, QueryContainerFlags> = new Map();
-        for (const query of context.getQueryDescriptors()) {
-          computeQueryState(conditions, query);
+          context.cqw =
+            sizeFeatures.width != null
+              ? sizeFeatures.width / 100
+              : parentContext.cqw;
+          context.cqh =
+            sizeFeatures.height != null
+              ? sizeFeatures.height / 100
+              : parentContext.cqh;
         }
-
-        state = {
-          conditions,
-          context: {
-            cqw:
-              sizeFeatures.width != null
-                ? sizeFeatures.width / 100
-                : parentContext.cqw,
-            cqh:
-              sizeFeatures.height != null
-                ? sizeFeatures.height / 100
-                : parentContext.cqh,
-            fontSize: data.fontSize,
-            rootFontSize: parentContext.rootFontSize,
-            writingAxis: data.writingAxis,
-          },
-          isQueryContainer: true,
-        };
       }
-
-      this.cachedState = state;
+      this.cachedState = state = {
+        conditions,
+        context,
+        displayFlags,
+        isQueryContainer,
+      };
     }
     return state;
   }
@@ -917,16 +938,21 @@ function computeContainerType(containerType: string): ContainerType {
   return type;
 }
 
-function computeValidContainer(displayType: string) {
-  // TODO: Better handling of the `display` property
-  const lowerDisplayType = displayType.toLowerCase();
-  return !(
-    lowerDisplayType === 'none' ||
-    lowerDisplayType === 'contents' ||
-    lowerDisplayType === 'inline' ||
-    lowerDisplayType.startsWith('table') ||
-    lowerDisplayType.startsWith('ruby')
-  );
+function computeDisplayFlags(displayType: string): DisplayFlags {
+  let flags = 0;
+  if (displayType !== 'none') {
+    flags |= DisplayFlags.Enabled;
+
+    if (
+      displayType !== 'contents' &&
+      displayType !== 'inline' &&
+      !TABLE_OR_RUBY_DISPLAY_TYPE.test(displayType)
+    ) {
+      flags |= DisplayFlags.EligibleForSizeContainment;
+    }
+  }
+
+  return flags;
 }
 
 function computeContainerNames(containerNames: string) {
